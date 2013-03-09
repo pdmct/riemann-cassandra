@@ -48,6 +48,12 @@ public class RiemannCassandraClient {
 	options.addOption("jmx_username", true, "username for cassandra jmx agent");
 	options.addOption("jmx_password", true, "password cassandra jmx agent");
 	options.addOption("interval_seconds", true, "number of seconds between updates");
+	options.addOption("tp", true, "emit ThreadPoolMetrics");
+	options.addOption("cf", true, "emit ColumnFamilyMetrics");
+	options.addOption("bs", true, "emit BasicMetrics");
+	options.addOption("column_family1", true, "1st column family to monitor");
+	options.addOption("column_family2", true, "2nd column family to monitor");
+	options.addOption("column_family3", true, "3rd column family to monitor");
     }
 
     final RiemannClient riemannClient;
@@ -114,6 +120,7 @@ public class RiemannCassandraClient {
 	    return true;
 	} catch (Exception e) {
 	    // We silently continue
+	    //e.printStackTrace();
 	}
 
 	jmxClient = null;
@@ -128,7 +135,11 @@ public class RiemannCassandraClient {
 	events.add(Event.newBuilder(protoEvent).setService(name).setMetricF(val).setDescription(desc).build());
     }
 
-    private long emitColumnFamilyMetrics() {
+    private void add(List<Event> events, String name, float val, String desc, String tag) {
+    	events.add(Event.newBuilder(protoEvent).setService(name).setMetricF(val).setDescription(desc).addTags(tag).build());
+    }
+
+    private long emitColumnFamilyMetrics(String columnFamily1, String columnFamily2, String columnFamily3) {
 	List<Event> events = new ArrayList<Event>();
 
 	Iterator<Entry<String, ColumnFamilyStoreMBean>> it = jmxClient.getColumnFamilyStoreMBeanProxies();
@@ -138,30 +149,39 @@ public class RiemannCassandraClient {
 	while (it.hasNext()) {
 	    Entry<String, ColumnFamilyStoreMBean> e = it.next();
 
-	    String name = "cassandra.db." + e.getKey() + "." + e.getValue().getColumnFamilyName();
+	    String name = "c.db." + e.getKey() + "." + e.getValue().getColumnFamilyName();
 	    ColumnFamilyStoreMBean v = e.getValue();
 
-	    add(events, name + ".keys", v.estimateKeys() / 1000);
-	    add(events, name + ".total_sstable_mb", v.getLiveDiskSpaceUsed() / (1024 * 1024));
-	    add(events, name + ".total_bloom_mb", v.getBloomFilterDiskSpaceUsed() / (1024 * 1024));
-	    add(events, name + ".bloom_fp_rate", (float) v.getRecentBloomFilterFalseRatio());
-	    add(events, name + ".max_row_size_kb", v.getMaxRowSize() / 1024);
-	    add(events, name + ".min_row_size_kb", v.getMinRowSize() / 1024);
-	    add(events, name + ".mean_row_size_kb", v.getMeanRowSize() / 1024);
-	    add(events, name + ".sstable_count", v.getLiveSSTableCount());
-	    add(events, name + ".memtable_size_mb", (float) v.getMemtableDataSize() / (1024 * 1024));
+	    if(columnFamily1.equals("all") || 
+	    	columnFamily1.equals(v.getColumnFamilyName()) || 
+	    	columnFamily2.equals(v.getColumnFamilyName()) ||
+	    	columnFamily3.equals(v.getColumnFamilyName())) {
 
-	    // latencies can return NaN
-	    Float f = (float) v.getRecentReadLatencyMicros();
-	    add(events, name + ".read_latency", f.equals(Float.NaN) ? 0.0f : f);
+		    add(events, name + ".keys", v.estimateKeys() / 1000, "keys", v.getColumnFamilyName());
+		    add(events, name + ".total_sstable_mb", v.getLiveDiskSpaceUsed() / (1024 * 1024),"total_sstable_mb",v.getColumnFamilyName());
+		    add(events, name + ".total_bloom_mb", v.getBloomFilterDiskSpaceUsed() / (1024 * 1024),"total_bloom_mb",v.getColumnFamilyName());
+		    add(events, name + ".bloom_fp_rate", (float) v.getRecentBloomFilterFalseRatio(),"bloom_fp_rate",v.getColumnFamilyName());
+		    add(events, name + ".max_row_size_kb", v.getMaxRowSize() / 1024,"max_row_size_kb",v.getColumnFamilyName());
+		    add(events, name + ".min_row_size_kb", v.getMinRowSize() / 1024,"min_row_size_kb",v.getColumnFamilyName());
+		    add(events, name + ".mean_row_size_kb", v.getMeanRowSize() / 1024,"mean_row_size_kb",v.getColumnFamilyName());
+		    add(events, name + ".sstable_count", v.getLiveSSTableCount(),"sstable_count",v.getColumnFamilyName());
+		    add(events, name + ".memtable_size_mb", (float) v.getMemtableDataSize() / (1024 * 1024),"memtable_size_mb",v.getColumnFamilyName());
+		    add(events, name + ".memtable_count", (float) v.getMemtableColumnsCount(),"memtable_count",v.getColumnFamilyName());
+		    add(events, name + ".memtable_switch_count", (float) v.getMemtableSwitchCount(),"memtable_switch_count",v.getColumnFamilyName());
+		    
 
-	    f = (float) e.getValue().getRecentWriteLatencyMicros();
-	    add(events, name + ".write_latency", f.equals(Float.NaN) ? 0.0f : f);
+		    // latencies can return NaN
+		    Float f = (float) v.getRecentReadLatencyMicros();
+		    add(events, name + ".read_latency", f.equals(Float.NaN) ? 0.0f : f,"read_latency",v.getColumnFamilyName());
 
-	    totalBytes += e.getValue().getLiveDiskSpaceUsed();
+		    f = (float) e.getValue().getRecentWriteLatencyMicros();
+		    add(events, name + ".write_latency", f.equals(Float.NaN) ? 0.0f : f,"write_latency",v.getColumnFamilyName());
 
-	    riemannClient.sendEvents(events.toArray(new Event[] {}));
-	    events.clear();
+		    totalBytes += e.getValue().getLiveDiskSpaceUsed();
+
+		    riemannClient.sendEvents(events.toArray(new Event[] {}));
+		    events.clear();
+		}
 	}
 
 	return totalBytes;
@@ -175,42 +195,51 @@ public class RiemannCassandraClient {
 	while (it.hasNext()) {
 	    Entry<String, JMXEnabledThreadPoolExecutorMBean> p = it.next();
 
-	    String name = "cassandra.tp." + p.getKey();
+	    String name = "c.tp." + p.getKey();
 	    JMXEnabledThreadPoolExecutorMBean v = p.getValue();
 
-	    add(events, name + ".completed", v.getCompletedTasks());
-	    add(events, name + ".active", v.getActiveCount());
-	    add(events, name + ".pending", v.getPendingTasks());
-	    add(events, name + ".blocked", v.getCurrentlyBlockedTasks());
+	    add(events, name + ".completed", v.getCompletedTasks(), "completed", p.getKey());
+	    add(events, name + ".active", v.getActiveCount(),"active",p.getKey());
+	    add(events, name + ".pending", v.getPendingTasks(),"pending",p.getKey());
+	    add(events, name + ".blocked", v.getCurrentlyBlockedTasks(),"blocked",p.getKey());
 
 	    riemannClient.sendEvents(events.toArray(new Event[] {}));
 	    events.clear();
 	}
     }
 
-    private void emitMetrics() {
+    private void emitMetrics(boolean tp, boolean cf, boolean bs, String columnFamily1, String columnFamily2, String columnFamily3) {
 
 	if (jmxClient == null && !reconnectJMX())
 	    return;
 
 	try {
 
-	    // TP Metrics
-	    emitThreadPoolMetrics();
+		List<Event> events = new ArrayList<Event>();
+
+	    if (tp)// TP Metrics
+	    	emitThreadPoolMetrics();
+
 
 	    // CF Metrics
-	    long totalSSTableBytes = emitColumnFamilyMetrics();
+	    long totalSSTableBytes; 
+
+	    if (cf)
+	    	totalSSTableBytes = emitColumnFamilyMetrics(columnFamily1, columnFamily2, columnFamily3);
+	    else
+	    	totalSSTableBytes = 0;
 
 	    // Basic metrics
-	    List<Event> events = new ArrayList<Event>();
-
-	    add(events, "cassandra.exception_count", jmxClient.getExceptionCount());
-	    add(events, "cassandra.heap_used_mb", jmxClient.getHeapMemoryUsage().getUsed() / (1024 * 1024));
-	    add(events, "cassandra.heap_max_mb", jmxClient.getHeapMemoryUsage().getMax() / (1024 * 1024));
-	    add(events, "cassandra.heap_committed_mb", jmxClient.getHeapMemoryUsage().getCommitted() / (1024 * 1024));
-	    add(events, "cassandra.recent_timeouts", jmxClient.msProxy.getRecentTotalTimouts(), FBUtilities.json(jmxClient.msProxy.getRecentTimeoutsPerHost()));
-	    add(events, "cassandra.pending_compactions", jmxClient.getCompactionManagerProxy().getPendingTasks());
-	    add(events, "cassandra.total_sstable_mb", totalSSTableBytes / (1024 * 1024));
+	    
+	    if (bs) {
+		    add(events, "c.exception_count", jmxClient.getExceptionCount());
+		    add(events, "c.heap_used_mb", jmxClient.getHeapMemoryUsage().getUsed() / (1024 * 1024));
+		    add(events, "c.heap_max_mb", jmxClient.getHeapMemoryUsage().getMax() / (1024 * 1024));
+		    add(events, "c.heap_committed_mb", jmxClient.getHeapMemoryUsage().getCommitted() / (1024 * 1024));
+		    add(events, "c.recent_timeouts", jmxClient.msProxy.getRecentTotalTimouts(), FBUtilities.json(jmxClient.msProxy.getRecentTimeoutsPerHost()));
+		    add(events, "c.pending_compactions", jmxClient.getCompactionManagerProxy().getPendingTasks());
+		    add(events, "c.total_sstable_mb", totalSSTableBytes / (1024 * 1024));
+		}
 
 	    riemannClient.sendEvents(events.toArray(new Event[] {}));
 	} catch (Throwable t) {
@@ -247,14 +276,23 @@ public class RiemannCassandraClient {
 	Integer jmxPort = Integer.valueOf(cl.getOptionValue("jmx_port", "7199"));
 	Integer riemannPort = Integer.valueOf(cl.getOptionValue("riemann_port", "5555"));
 	Integer intervalSeconds = Integer.valueOf(cl.getOptionValue("interval_seconds", "5"));
+	boolean doTPMetrics = Boolean.parseBoolean(cl.getOptionValue("tp","false"));
+	boolean doCFMetrics = Boolean.parseBoolean(cl.getOptionValue("cf","false"));
+	boolean doBSMetrics = Boolean.parseBoolean(cl.getOptionValue("bs","true"));
+	String columnFamily1 = cl.getOptionValue("column_family1", "all");
+	String columnFamily2 = cl.getOptionValue("column_family2", "none");
+	String columnFamily3 = cl.getOptionValue("column_family3", "none");
 
 	RiemannCassandraClient cli = new RiemannCassandraClient(riemannHost, riemannPort, cassandraHost, jmxPort, jmxUsername, jmxPassword);
 
 	while (true) {
-	    cli.emitMetrics();
+	    cli.emitMetrics(doTPMetrics, doCFMetrics, doBSMetrics, columnFamily1, columnFamily2, columnFamily3);
 	    try {
 		Thread.sleep(intervalSeconds * 1000);
-	    } catch (InterruptedException e) {}
+	    } catch (InterruptedException e) {
+	    	e.printStackTrace();
+	    	break;
+	    }
 	}
     }
 }
